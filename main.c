@@ -11,7 +11,8 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 
-#define BUFFER_NUMBER 20
+#define BUFFER_NUMBER
+#define CLEAR(x) memset(&(x), 0, sizeof(x))
 
 typedef struct UserspaceBuffers {
         void *start;
@@ -20,80 +21,39 @@ typedef struct UserspaceBuffers {
 
 typedef struct v4l2_buffer v4l2_buffer;
 
-int openV4lDevice();
-void closeV4lDevice(int fd);
-void getV4lDeviceCapabilities(int fd);
-void setV4lDeviceVideoFormat(int fd);
-void negociateMappingBuffer(int fd, UserspaceBuffers *buffers, struct v4l2_requestbuffers bufferInfo);
-void streamOn(int fd, v4l2_buffer bufferInfo);
-void streamOff(int fd, v4l2_buffer bufferInfo);
-void initQueue(int fd, v4l2_buffer bufferInfo);
+void open_V4lDevice();
+void close_V4lDevice();
+void init_V4lDevice();
+void checkV4lDeviceStreamingCapabilities();
+void setV4lDeviceVideoFormat();
+void initV4lDeviceStreamingBuffer();
+void uninit_device();
+static int fd = -1;
+static unsigned int n_buffers;
+UserspaceBuffers *buffers;
+static char *dev_name;
 
 int main()
 {
-    int fd;
-    UserspaceBuffers *buffers;
-    struct v4l2_requestbuffers reqbuf;
-    unsigned int i;
+    dev_name = "/dev/video0";
 
-    memset(&reqbuf, 0, sizeof(reqbuf));
-    reqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    reqbuf.memory = V4L2_MEMORY_MMAP;
-    reqbuf.count = BUFFER_NUMBER;
-
-    buffers = calloc(BUFFER_NUMBER, sizeof(*buffers));
-    assert(buffers != NULL);
-
-    v4l2_buffer info;
-    memset(&info, 0, sizeof(info));
-    info.type = reqbuf.type;
-    info.type = reqbuf.memory;
-
-    fd = openV4lDevice();
-
-    getV4lDeviceCapabilities(fd);
-    setV4lDeviceVideoFormat(fd);
-    negociateMappingBuffer(fd, buffers, reqbuf);
-
-    streamOn(fd, info);
-    initQueue(fd, info);
-
-    // take 20 frames
-    /*for (i=0; i<BUFFER_NUMBER; i++)
-    {
-
-        if (ioctl(fd, VIDIOC_QBUF, ))
-
-    }*/
-
-    streamOff(fd, info);
-
-
-    assert(buffers != NULL);
-
-    // free some shit
-    for (i = 0; i < 20; i++)
-        munmap(buffers[i].start, buffers[i].length);
-
-    free(buffers);
-
-    closeV4lDevice(fd);
+    open_V4lDevice();
+    init_V4lDevice();
+    uninit_device();
+    close_V4lDevice();
 
     return EXIT_SUCCESS;
 }
 
-int openV4lDevice()
+void open_V4lDevice()
 {
-    int fd;
-    if((fd = open("/dev/video0", O_RDWR)) < 0){
+    if((fd = open(dev_name, O_RDWR)) < 0){
         perror("open");
         exit(1);
     }
-
-    return fd;
 }
 
-void closeV4lDevice(int fd)
+void close_V4lDevice()
 {
     if(close(fd)!=0){
         fprintf(stderr,"error closing the device");
@@ -101,7 +61,14 @@ void closeV4lDevice(int fd)
     }
 }
 
-void getV4lDeviceCapabilities(int fd)
+void init_V4lDevice()
+{
+    checkV4lDeviceStreamingCapabilities();
+    setV4lDeviceVideoFormat();
+    initV4lDeviceStreamingBuffer();
+}
+
+void checkV4lDeviceStreamingCapabilities()
 {
     struct v4l2_capability cap;
 
@@ -121,9 +88,11 @@ void getV4lDeviceCapabilities(int fd)
     }
 }
 
-void setV4lDeviceVideoFormat(int fd)
+void setV4lDeviceVideoFormat()
 {
     struct v4l2_format format;
+    CLEAR(format);
+
     format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     format.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
     format.fmt.pix.width = 640;
@@ -136,90 +105,71 @@ void setV4lDeviceVideoFormat(int fd)
     }
 }
 
-void negociateMappingBuffer(int fd, UserspaceBuffers *buffers, struct v4l2_requestbuffers info)
-{
 
+void initV4lDeviceStreamingBuffer()
+{
+    struct v4l2_requestbuffers req;
+    CLEAR(req);
+
+    req.count = 4;
+    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_MMAP;
+
+    if (ioctl(fd, VIDIOC_REQBUFS, &req)<0)
+    {
+        if (EINVAL == errno) {
+            fprintf(stderr, "%s does not support mem mapping", dev_name);
+            exit(EXIT_FAILURE);
+        } else {
+            perror("VIDIOC_REQBUFS");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (req.count < 2){
+        fprintf(stderr, "insufficient buffer memory on %s \\n", dev_name);
+        exit(EXIT_FAILURE);
+    }
+
+    buffers = calloc(req.count, sizeof(*buffers));
+
+    if (!buffers){
+        fprintf(stderr,"out of memory error\\n");
+        exit(EXIT_FAILURE);
+    }
+
+    for (n_buffers = 0; n_buffers < req.count ; ++n_buffers) {
+        struct v4l2_buffer buf;
+        CLEAR(buf);
+
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = n_buffers;
+
+        if (ioctl(fd,VIDIOC_QUERYBUF, &buf)<0){
+            perror("VIDIOC_QUERYBUF");
+            exit(EXIT_FAILURE);
+        }
+
+        buffers[n_buffers].length = buf.length;
+        buffers[n_buffers].start = mmap(NULL, buf.length, PROT_READ|PROT_WRITE, MAP_SHARED, fd, buf.m.offset);
+
+        if (MAP_FAILED == buffers[n_buffers].start){
+            fprintf(stderr,"can not map memmory from device %s", dev_name);
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
+void uninit_device()
+{
     unsigned int i;
 
-    if ( -1 == ioctl(fd, VIDIOC_REQBUFS, &info)){
-        if (errno == EINVAL )
-            printf("mmap streaming is not supported\\n");
-        else
-            perror("VIDIOC_REQBUFS");
-
+    for (i = 0; i < n_buffers; i++)
+    if ( -1 == munmap(buffers[i].start, buffers[i].length)){
+        perror("munmap");
         exit(EXIT_FAILURE);
     }
 
-    printf("we got %d buffers thanks man",info.count);
-
-    for (i=0; i<info.count; i++)
-    {
-
-        struct v4l2_buffer buffer;
-
-        memset(&buffer, 0, sizeof(buffer));
-        buffer.type = info.type;
-        buffer.memory = V4L2_MEMORY_MMAP;
-        buffer.index = i;
-
-        if (-1 == ioctl (fd, VIDIOC_QUERYBUF, &buffer)){
-            perror(VIDIOC_QUERYBUF);
-            exit(EXIT_FAILURE);
-        }
-
-        buffers[i].length = buffer.length;
-
-        buffers[i].start = mmap(NULL, buffer.length,
-                                PROT_READ | PROT_WRITE,
-                                MAP_SHARED,
-                                fd, buffer.m.offset);
-
-
-        if (MAP_FAILED == buffers[i].start){
-            perror("mmap");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    //for (i = 0; i < reqbuf.count; i++)
-      //  munmap(buffers[i].start, buffers[i].length);
-
-    //free(buffers);
-
-}
-
-void streamOn(int fd, v4l2_buffer bufferInfo)
-{
-    // clean shit
-    int type = bufferInfo.type;
-    if ( ioctl(fd, VIDIOC_STREAMON, &type) < 0){
-        perror("VIDIOC_STREAMON");
-        exit(EXIT_FAILURE);
-    }
-}
-
-void streamOff(int fd, v4l2_buffer bufferInfo)
-{
-    // clean shit
-
-    int type = bufferInfo.type;
-    if ( ioctl(fd, VIDIOC_STREAMOFF, &type) < 0){
-        perror("VIDIOC_STREAMOFF");
-        exit(EXIT_FAILURE);
-    }
-}
-
-void initQueue(int fd, v4l2_buffer bufferInfo)
-{
-
-    v4l2_buffer info;
-    memset(&info, 0, sizeof(info));
-    info.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    info.type = V4L2_MEMORY_MMAP;
-    info.index = 1;
-
-    if(ioctl(fd, VIDIOC_QBUF, &info) < 0 ){
-        perror("VIDIOC_QBUF INIT");
-        exit(EXIT_FAILURE);
-    }
+    free(buffers);
 }
