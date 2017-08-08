@@ -261,6 +261,36 @@ static void main_loop()
 
 static int read_frame()
 {
+    struct v4l2_buffer buf;
+
+    CLEAR(buf);
+
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
+
+    if ( ioctl(fd, VIDIOC_DQBUF, &buf)<0) {
+        switch(errno) {
+        case EAGAIN:
+            return 0;
+
+        case EIO:
+
+        default:
+            perror("VIDIOC_DQBUF");
+        }
+    }
+
+    assert(buf.index < n_buffers);
+
+    process_image(buffers[buf.index].start, buf.bytesused);
+
+    if (ioctl(fd, VIDIOC_QBUF, &buf)<0)
+    {
+        perror("VIDIOC_QBUF");
+        exit(EXIT_FAILURE);
+    }
+
+    return 1;
 
 }
 
