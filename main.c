@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -11,7 +12,6 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 
-#define BUFFER_NUMBER
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
 typedef struct UserspaceBuffers {
@@ -28,10 +28,16 @@ void checkV4lDeviceStreamingCapabilities();
 void setV4lDeviceVideoFormat();
 void initV4lDeviceStreamingBuffer();
 void uninit_device();
+static void start_capturing();
+static void stop_capturing();
+static void main_loop();
+static int read_frame();
+
 static int fd = -1;
 static unsigned int n_buffers;
 UserspaceBuffers *buffers;
 static char *dev_name;
+static int frame_count = 60;
 
 int main()
 {
@@ -39,6 +45,8 @@ int main()
 
     open_V4lDevice();
     init_V4lDevice();
+    start_capturing();
+    stop_capturing();
     uninit_device();
     close_V4lDevice();
 
@@ -173,3 +181,86 @@ void uninit_device()
 
     free(buffers);
 }
+
+static void start_capturing()
+{
+    unsigned int i;
+    enum v4l2_buf_type type;
+
+    for( i = 0; i < n_buffers; ++i) {
+        struct v4l2_buffer buf;
+
+        CLEAR(buf);
+
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = i;
+
+        if (ioctl(fd, VIDIOC_QBUF, &buf)<0) {
+            perror("VIDIOC_QBUF");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if ( ioctl(fd, VIDIOC_STREAMON, &type)<0) {
+        perror("VIDIOC_STREAMON");
+        exit(EXIT_FAILURE);
+    }
+}
+
+static void stop_capturing()
+{
+    enum v4l2_buf_type type;
+
+    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    if (ioctl(fd, VIDIOC_STREAMOFF, &type)<0) {
+        perror("VIDIOC_STREAMOFF");
+        exit(EXIT_FAILURE);
+    }
+}
+
+static void main_loop()
+{
+
+    unsigned int count;
+
+    count = frame_count;
+
+    while (count -- > 0) {
+        for (;;) {
+            fd_set fds;
+            struct timeval tv;
+            int r;
+
+            FD_ZERO(&fds);
+            FD_SET(fd, &fds);
+
+            // Timeout
+            tv.tv_sec = 2;
+            tv.tv_usec = 0;
+
+            r = select(fd + 1, &fds, NULL, NULL, &tv);
+
+            if (-1 == r) {
+                if(EINTR == errno)
+                    continue;
+            }
+
+            if (0 == r) {
+                fprintf(stderr, "select timeout\\n");
+                exit(EXIT_FAILURE);
+            }
+
+            if (read_frame())
+                break;
+        }
+    }
+}
+
+static int read_frame()
+{
+
+}
+
