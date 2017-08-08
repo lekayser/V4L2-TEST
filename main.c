@@ -32,6 +32,7 @@ static void start_capturing();
 static void stop_capturing();
 static void main_loop();
 static int read_frame();
+static void process_image(const void *p, int size);
 
 static int fd = -1;
 static unsigned int n_buffers;
@@ -46,6 +47,7 @@ int main()
     open_V4lDevice();
     init_V4lDevice();
     start_capturing();
+    main_loop();
     stop_capturing();
     uninit_device();
     close_V4lDevice();
@@ -291,6 +293,12 @@ static int read_frame()
     }
 
     return 1;
+
+}
+
+static void process_image(const void *p, int size)
+{
+
 
 }
 
