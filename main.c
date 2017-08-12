@@ -11,6 +11,8 @@
 #include <assert.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <SDL2/SDL.h>
+#include <SDL/SDL_image.h>
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
@@ -20,6 +22,7 @@ typedef struct UserspaceBuffers {
 } UserspaceBuffers;
 
 typedef struct v4l2_buffer v4l2_buffer;
+struct v4l2_format v4l2_format;
 
 void open_V4lDevice();
 void close_V4lDevice();
@@ -32,13 +35,24 @@ static void start_capturing();
 static void stop_capturing();
 static void main_loop();
 static int read_frame();
-static void process_image(const void *p, int size);
+static void process_image(void *p, int size);
+static void init_SDL_Surface();
+static void uninit_SDL_Surface();
+
 
 static int fd = -1;
 static unsigned int n_buffers;
 UserspaceBuffers *buffers;
 static char *dev_name;
 static int frame_count = 60;
+
+static SDL_Window* window;
+static SDL_Surface* screen;
+static SDL_RWops* buffer_stream;
+static SDL_Renderer *renderer;
+static SDL_Texture *texture;
+static uint8_t *buffer_sdl;
+
 
 int main()
 {
@@ -47,8 +61,10 @@ int main()
     open_V4lDevice();
     init_V4lDevice();
     start_capturing();
+    init_SDL_Surface();
     main_loop();
     stop_capturing();
+    uninit_SDL_Surface();
     uninit_device();
     close_V4lDevice();
 
@@ -100,15 +116,14 @@ void checkV4lDeviceStreamingCapabilities()
 
 void setV4lDeviceVideoFormat()
 {
-    struct v4l2_format format;
-    CLEAR(format);
+    CLEAR(v4l2_format);
 
-    format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    format.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-    format.fmt.pix.width = 640;
-    format.fmt.pix.height = 360;
+    v4l2_format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    v4l2_format.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+    v4l2_format.fmt.pix.width = 640;
+    v4l2_format.fmt.pix.height = 360;
 
-    if(ioctl(fd, VIDIOC_S_FMT, &format) < 0)
+    if(ioctl(fd, VIDIOC_S_FMT, &v4l2_format) < 0)
     {
         perror("VIDIOC_S_FMT");
         exit(1);
@@ -296,9 +311,43 @@ static int read_frame()
 
 }
 
-static void process_image(const void *p, int size)
+static void process_image(void *p, int size)
 {
 
+    assert(texture != NULL);
+    assert(p != NULL);
+
+
+    SDL_UpdateTexture(texture, NULL, p, v4l2_format.fmt.pix.width * 2);
+    SDL_RenderCopy(renderer, texture, NULL, NULL);
+    SDL_RenderPresent(renderer);
 
 }
 
+static void init_SDL_Surface()
+{
+    SDL_CreateWindowAndRenderer(0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP, &window, &renderer);
+    assert(window != NULL);
+    assert(renderer != NULL);
+
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+    SDL_RenderPresent(renderer);
+
+
+    texture = SDL_CreateTexture(renderer,
+                               SDL_PIXELFORMAT_YUY2,
+                               SDL_TEXTUREACCESS_STREAMING,
+                               v4l2_format.fmt.pix.width, v4l2_format.fmt.pix.height);
+
+    assert(texture != NULL);
+
+}
+
+static void uninit_SDL_Surface()
+{
+    SDL_DestroyTexture(texture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+}
